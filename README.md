@@ -3,7 +3,7 @@
 English | 日本語
 
 ## Overview / 概要
-Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (top/front/right/back/left/bottom) from each 360° frame. Optional PLY is converted to points3D.txt (via Open3D).
+Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (top/front/right/back/left/bottom) from each 360° frame. Optional PLY is converted to points3D.txt.
 
 ---
 **Windows binary edition with GUI is sold on BOOTH and Gumroad. No need python command and easy to run!**
@@ -57,7 +57,7 @@ Refer to other URL
 ## Features / 特長
 - Equirectangular → Cubemap, 6 rectilinear 90° crops per frame (top/front/right/back/left/bottom), multi-process available
 - Writes COLMAP `cameras.txt`, `images.txt`, `points3D.txt`
-- Optional PLY transform/export (needs Open3D)
+- Optional PLY transform/export
 - Adjustable FoV and crop size; vertical flip for sampling equirect
 - Optional image-count cap for quick tests
 - Generate masks for human
@@ -74,7 +74,7 @@ Refer to other URL
 - Metashape Standard (https://www.agisoft.com/features/standard-edition/)
 - Python 3.9+
 - pip: `numpy`, `pillow`, `opencv-python`
-- Optional: `ultralytics`(for generate mask for human by YOLO), `open3d` (for PLY → points3D)
+- Optional: `ultralytics` (for generating YOLO masks)
 
 ## Usage / 使い方
 ### SfM with Camera type as Spherical in Metashape

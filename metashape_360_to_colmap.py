@@ -16,12 +16,14 @@ Usage example:
 
 Dependencies:
     pip install numpy pillow opencv-python
-    Optional: pip install open3d (for points3D handling)
+    Optional: pip install ultralytics (for YOLO-based mask generation)
 """
 
 import argparse
 import configparser
+import importlib.util
 import multiprocessing
+import os
 import shutil
 import sys
 import xml.etree.ElementTree as ET
@@ -33,19 +35,156 @@ import numpy as np
 import cv2
 from PIL import Image
 
-try:
-    import open3d as o3d
+YOLO = None
+HAS_YOLO = importlib.util.find_spec("ultralytics") is not None
 
-    HAS_OPEN3D = True
-except ImportError:  # pragma: no cover - optional dependency
-    HAS_OPEN3D = False
 
-try:
-    from ultralytics import YOLO
+def get_yolo_class():
+    """Import ultralytics lazily so non-YOLO workers avoid loading Torch/OpenMP."""
+    global YOLO
+    if YOLO is None:
+        from ultralytics import YOLO as ultralytics_yolo
 
-    HAS_YOLO = True
-except ImportError:  # pragma: no cover - optional dependency
-    HAS_YOLO = False
+        YOLO = ultralytics_yolo
+    return YOLO
+
+
+PLY_SCALAR_DTYPES = {
+    "char": "i1",
+    "uchar": "u1",
+    "short": "i2",
+    "ushort": "u2",
+    "int": "i4",
+    "uint": "u4",
+    "float": "f4",
+    "double": "f8",
+    "int8": "i1",
+    "uint8": "u1",
+    "int16": "i2",
+    "uint16": "u2",
+    "int32": "i4",
+    "uint32": "u4",
+    "float32": "f4",
+    "float64": "f8",
+}
+
+
+def read_ply_vertices(ply_path: Path) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """Read vertex positions and optional RGB colors from an ASCII or binary PLY file."""
+
+    def parse_header(handle) -> Tuple[str, int, list]:
+        first_line = handle.readline().decode("ascii", errors="strict").strip()
+        if first_line != "ply":
+            raise ValueError(f"Unsupported PLY header in {ply_path}")
+
+        fmt = None
+        vertex_count = None
+        vertex_properties = []
+        current_element = None
+
+        while True:
+            line = handle.readline()
+            if not line:
+                raise ValueError(f"Unexpected EOF while reading PLY header: {ply_path}")
+
+            text = line.decode("ascii", errors="strict").strip()
+            if not text or text.startswith("comment"):
+                continue
+            if text == "end_header":
+                break
+
+            parts = text.split()
+            if parts[0] == "format" and len(parts) >= 2:
+                fmt = parts[1]
+            elif parts[0] == "element" and len(parts) >= 3:
+                current_element = parts[1]
+                if current_element == "vertex":
+                    vertex_count = int(parts[2])
+                    vertex_properties = []
+            elif parts[0] == "property" and current_element == "vertex":
+                if len(parts) < 3:
+                    raise ValueError(f"Malformed PLY property in {ply_path}: {text}")
+                if parts[1] == "list":
+                    raise ValueError(f"PLY vertex list properties are not supported: {ply_path}")
+                vertex_properties.append((parts[2], parts[1]))
+
+        if fmt not in {"ascii", "binary_little_endian", "binary_big_endian"}:
+            raise ValueError(f"Unsupported PLY format '{fmt}' in {ply_path}")
+        if vertex_count is None:
+            raise ValueError(f"PLY vertex element missing in {ply_path}")
+        if not vertex_properties:
+            raise ValueError(f"PLY vertex properties missing in {ply_path}")
+        return fmt, vertex_count, vertex_properties
+
+    def extract_colors(columns: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        for names in (("red", "green", "blue"), ("diffuse_red", "diffuse_green", "diffuse_blue"), ("r", "g", "b")):
+            if all(name in columns for name in names):
+                color_array = np.column_stack([columns[name] for name in names]).astype(np.float64)
+                if np.issubdtype(color_array.dtype, np.floating) and color_array.size and color_array.max() <= 1.0:
+                    color_array *= 255.0
+                return np.clip(np.rint(color_array), 0, 255).astype(np.uint8)
+        return None
+
+    with open(ply_path, "rb") as handle:
+        fmt, vertex_count, vertex_properties = parse_header(handle)
+
+        if fmt == "ascii":
+            rows = []
+            for _ in range(vertex_count):
+                line = handle.readline()
+                if not line:
+                    raise ValueError(f"Unexpected EOF while reading PLY vertices: {ply_path}")
+                values = line.decode("ascii", errors="strict").strip().split()
+                if len(values) < len(vertex_properties):
+                    raise ValueError(f"Malformed PLY vertex row in {ply_path}")
+                rows.append(values[: len(vertex_properties)])
+            columns = {
+                name: np.asarray([row[idx] for row in rows], dtype=np.dtype(PLY_SCALAR_DTYPES[type_name]))
+                for idx, (name, type_name) in enumerate(vertex_properties)
+            }
+        else:
+            endian = "<" if fmt == "binary_little_endian" else ">"
+            dtype = np.dtype([
+                (name, endian + PLY_SCALAR_DTYPES[type_name])
+                for name, type_name in vertex_properties
+            ])
+            buffer = handle.read(dtype.itemsize * vertex_count)
+            if len(buffer) < dtype.itemsize * vertex_count:
+                raise ValueError(f"Unexpected EOF while reading binary PLY vertices: {ply_path}")
+            structured = np.frombuffer(buffer, dtype=dtype, count=vertex_count)
+            columns = {name: structured[name] for name, _ in vertex_properties}
+
+    required = ("x", "y", "z")
+    if not all(name in columns for name in required):
+        raise ValueError(f"PLY file missing x/y/z vertex properties: {ply_path}")
+
+    points = np.column_stack([columns[name] for name in required]).astype(np.float64)
+    colors = extract_colors(columns)
+    return points, colors
+
+
+def write_ply_vertices(ply_path: Path, points: np.ndarray, colors: Optional[np.ndarray] = None) -> None:
+    """Write transformed point cloud as an ASCII PLY file."""
+    with open(ply_path, "w", encoding="ascii", newline="\n") as handle:
+        handle.write("ply\n")
+        handle.write("format ascii 1.0\n")
+        handle.write(f"element vertex {len(points)}\n")
+        handle.write("property float x\n")
+        handle.write("property float y\n")
+        handle.write("property float z\n")
+        if colors is not None:
+            handle.write("property uchar red\n")
+            handle.write("property uchar green\n")
+            handle.write("property uchar blue\n")
+        handle.write("end_header\n")
+
+        if colors is None:
+            for x, y, z in points:
+                handle.write(f"{x:.6f} {y:.6f} {z:.6f}\n")
+        else:
+            safe_colors = np.clip(np.rint(colors), 0, 255).astype(np.uint8)
+            for (x, y, z), (r, g, b) in zip(points, safe_colors):
+                handle.write(f"{x:.6f} {y:.6f} {z:.6f} {int(r)} {int(g)} {int(b)}\n")
 
 
 def detect_image_format(image_path: Path) -> Tuple[str, str, int]:
@@ -590,7 +729,7 @@ def generate_mask_and_save(
         raise ImportError("ultralytics is required")
     
     # Load YOLO model in worker process
-    yolo_model = YOLO(yolo_model_path)
+    yolo_model = get_yolo_class()(yolo_model_path)
     
     # Generate mask
     mask = create_person_mask_from_yolo(
@@ -878,7 +1017,7 @@ def crop_and_save_image(
                 if dual_mask_mode:
                     if not HAS_YOLO:
                         raise ImportError("ultralytics is required for dual mask mode")
-                    cubemap_model = YOLO(yolo_model_path)
+                    cubemap_model = get_yolo_class()(yolo_model_path)
                     cubemap_mask = create_person_mask_from_yolo(
                         output_image_path,
                         cubemap_model,
@@ -1258,7 +1397,7 @@ def convert_metashape_to_colmap(
         if generate_masks and verbose:
             print(f"Loading YOLO model: {yolo_model_path}")
         if generate_masks:
-            yolo_model = YOLO(yolo_model_path)
+            yolo_model = get_yolo_class()(yolo_model_path)
 
     if verbose:
         print(f"Parsing Metashape XML: {xml_path}")
@@ -1738,13 +1877,11 @@ def convert_metashape_to_colmap(
             print(f"Wrote RealityScan XMP files to {xmp_output_dir}")
 
     points3d_data = []
-    if ply_path is not None and ply_path.exists() and HAS_OPEN3D:
+    if ply_path is not None and ply_path.exists():
         if verbose:
             print(f"Processing point cloud: {ply_path}")
 
-        pc = o3d.io.read_point_cloud(str(ply_path))
-        points3d = np.asarray(pc.points)
-        colors = np.asarray(pc.colors) if pc.has_colors() else None
+        points3d, colors = read_ply_vertices(ply_path)
 
         comp_transform = None
         if len(component_dict) == 1:
@@ -1788,13 +1925,9 @@ def convert_metashape_to_colmap(
             points3d_data.append((idx, x, y, z, r, g, b, 0.0, ""))
 
         output_ply = output_dir / "points3D.ply"
-        pc.points = o3d.utility.Vector3dVector(points3d)
-        o3d.io.write_point_cloud(str(output_ply), pc)
+        write_ply_vertices(output_ply, points3d, colors)
         if verbose:
             print(f"  Wrote transformed point cloud to {output_ply}")
-    elif ply_path is not None and not HAS_OPEN3D:
-        if verbose:
-            print("open3d is not installed; skipping PLY to points3D.txt conversion")
 
     points3d_txt = output_dir / "points3D.txt"
     with open(points3d_txt, "w", encoding="utf-8") as f:
@@ -1897,6 +2030,9 @@ def load_config(config_path: Path = Path("config.txt")) -> Dict[str, Any]:
 
 
 def main() -> int:
+    if os.name == "nt":
+        os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
     # Ensure logs flush promptly when this CLI is launched from the GUI.
     try:
         if hasattr(sys.stdout, "reconfigure"):

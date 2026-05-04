@@ -963,6 +963,8 @@ class Metashape360GUI:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=1,
                     universal_newlines=True,
                     cwd=str(self.get_app_base_dir()),
@@ -1014,6 +1016,8 @@ class Metashape360GUI:
         env = os.environ.copy()
         env.setdefault("PYTHONUNBUFFERED", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        if os.name == "nt":
+            env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
         return env
 
     def get_subprocess_creationflags(self):
