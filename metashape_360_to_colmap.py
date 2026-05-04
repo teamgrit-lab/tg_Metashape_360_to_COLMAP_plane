@@ -302,7 +302,7 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
 
         if calib is None:
             s["fl_x"] = s["w"] / 2.0
-            s["fl_y"] = s["w"] / 2.0
+            s["fl_y"] = s["h"] / 2.0
             s["cx"] = s["w"] / 2.0
             s["cy"] = s["h"] / 2.0
         else:
@@ -766,6 +766,7 @@ def crop_and_save_image(
     
     # Save with appropriate format settings based on output file extension
     output_path_lower = output_image_path.lower()
+    image_saved = False
     
     # Handle numpy array (16-bit) separately - use OpenCV for saving
     if isinstance(cropped, np.ndarray):
@@ -792,14 +793,14 @@ def crop_and_save_image(
                 except:
                     pass
                 if success:
-                    cropped = None
+                    image_saved = True
         except Exception as e:
             # If OpenCV saving fails, fall through to try PIL
             pass
     
     # PIL Image saving (8-bit)
     # Failsafe: if cropped is still a numpy array, convert to PIL first
-    if isinstance(cropped, np.ndarray):
+    if not image_saved and isinstance(cropped, np.ndarray):
         # Convert numpy array to PIL Image
         if cropped.dtype == np.uint8:
             if len(cropped.shape) == 3 and cropped.shape[2] == 4:
@@ -813,7 +814,9 @@ def crop_and_save_image(
             output_name = Path(output_image_path).name
             return (direction, output_name, output_image_path, np.array([]))
     
-    if output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
+    if image_saved:
+        pass
+    elif output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
         # JPG doesn't support alpha or bit depths > 8, convert to RGB 8-bit
         if isinstance(cropped, Image.Image) and cropped.mode not in ['RGB', 'L']:
             cropped = cropped.convert('RGB')
@@ -1666,7 +1669,6 @@ def convert_metashape_to_colmap(
             "name": output_image_name,
         }
         image_id += 1
-        processed_images += 1
 
     for output_image_name, R_c2w, t_c2w, planar_camera_id in planar_metadata:
         image_id = add_pose_to_colmap(
@@ -1678,7 +1680,8 @@ def convert_metashape_to_colmap(
             output_image_name,
             rotate_z180,
         )
-        processed_images += 1
+
+    processed_images = len(images_colmap)
 
     if verbose:
         print(f"Processed {processed_images} cropped images")
