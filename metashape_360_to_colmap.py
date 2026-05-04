@@ -27,7 +27,7 @@ import sys
 import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import cv2
@@ -280,6 +280,8 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
 
     calibrated_sensors = [
         sensor for sensor in sensors.iter("sensor")
+        # Spherical sensors may omit calibration because cubemap intrinsics are
+        # derived from crop size/FoV; planar sensors require Metashape calibration.
         if sensor.get("type") == "spherical" or sensor.find("calibration") is not None
     ]
     if not calibrated_sensors:
@@ -619,7 +621,7 @@ def object_binary_to_mask(object_mask: np.ndarray, invert_mask: bool) -> Image.I
     return Image.fromarray(final_mask, mode="L")
 
 
-def fuse_mask_images(mask_images: list, invert_mask: bool) -> Image.Image:
+def fuse_mask_images(mask_images: List[Optional[Image.Image]], invert_mask: bool) -> Image.Image:
     """Fuse multiple final-polarity masks by unioning their masked/object pixels."""
     object_mask = None
     for mask_image in mask_images:
@@ -636,6 +638,7 @@ def find_matching_mask(mask_dir: Path, image_path: Path, base_name: str) -> Opti
     """Find a custom mask that matches the source image name or stem."""
     if not mask_dir or not mask_dir.is_dir():
         return None
+    # Try the exact filename first, then common mask naming conventions.
     candidates = [image_path.name, f"{base_name}.png", f"{image_path.stem}.png", f"{base_name}_mask.png"]
     for candidate in candidates:
         mask_path = mask_dir / candidate
@@ -794,6 +797,8 @@ def crop_and_save_image(
                 success = cv2.imwrite(output_image_path, cropped_cv)
                 if verbose and success:
                     print(f"    Saved as 16-bit PNG with OpenCV")
+                if verbose and not success:
+                    print(f"    OpenCV failed to save {output_image_path}; trying PIL fallback")
                 try:
                     debug_log = Path(output_image_path).parent / "DEBUG_BITDEPTH.log"
                     with open(debug_log, 'a') as f:
@@ -831,7 +836,7 @@ def crop_and_save_image(
         if verbose:
             print(f"    Saved as JPG (8-bit, no alpha)")
     elif not image_saved and output_path_lower.endswith('.png'):
-        # PNG supports alphaand bit depths
+        # PNG supports alpha and bit depths
         if isinstance(cropped, Image.Image):
             cropped.save(output_image_path, optimize=True)
             if verbose:
@@ -1062,7 +1067,7 @@ def crop_direction(
 
 
 def parse_direction_mapping(value: Optional[str], default: float = 1.0) -> Dict[str, float]:
-    """Parse direction options like 'top=0.5,bottom:2'."""
+    """Parse direction options like 'top=0.5,bottom:2'; bare directions use default."""
     result: Dict[str, float] = {}
     if not value:
         return result
@@ -1428,8 +1433,6 @@ def convert_metashape_to_colmap(
             # Queue tasks for each cubemap direction
             for direction in directions:
                 frame_step = int(direction_frame_steps.get(direction, 1))
-                if frame_step < 1:
-                    frame_step = 1
                 if frame_index % frame_step != 0:
                     continue
                 direction_scale = float(direction_scales.get(direction, 1.0))

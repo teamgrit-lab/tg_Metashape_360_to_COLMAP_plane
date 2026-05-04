@@ -518,9 +518,9 @@ class Metashape360GUI:
         direction_scales_entry.grid(row=5, column=1, sticky="w", padx=5, pady=3)
         ToolTip(direction_scales_entry, self.t("tip_direction_scales"))
 
-        ttk.Label(proc_tab, text=self.t("direction_frame_steps")).grid(row=5, column=2, sticky="w", padx=5)
+        ttk.Label(proc_tab, text=self.t("direction_frame_steps")).grid(row=6, column=0, sticky="w", padx=5)
         direction_steps_entry = ttk.Entry(proc_tab, textvariable=self.var_direction_frame_steps, width=28)
-        direction_steps_entry.grid(row=5, column=3, sticky="w", padx=5, pady=3)
+        direction_steps_entry.grid(row=6, column=1, sticky="w", padx=5, pady=3)
         ToolTip(direction_steps_entry, self.t("tip_direction_frame_steps"))
 
         # Skip directions tab
