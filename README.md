@@ -9,7 +9,7 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 **Windows binary edition with GUI is sold on BOOTH and Gumroad. No need python command and easy to run!**
 - [BOOTH URL] https://kotohibi-cg.booth.pm/ 
 - [Gumroad URL] https://kotohibi.gumroad.com/
-  - The Python edition now includes the main data-export features below; the paid binary remains the easiest packaged GUI workflow.
+  - The Python edition in this repository now includes the main data-export features below; the paid binary remains the easiest packaged GUI workflow.
     * Dual mask mode which can generate more accurate masks. 
        - Added a mode that performs mask processing with equirectangular and cubemap and fuses them at the end. 
        - Although the processing time will increase, the mask processing system has been improved.
