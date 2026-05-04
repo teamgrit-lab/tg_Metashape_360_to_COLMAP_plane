@@ -268,6 +268,13 @@ def find_param(calib_xml: ET.Element, param_name: str) -> float:
     return 0.0
 
 
+def should_parse_sensor(sensor: ET.Element) -> bool:
+    """Return True when a Metashape sensor has enough data for export."""
+    if sensor.get("type") == "spherical":
+        return True
+    return sensor.find("calibration") is not None
+
+
 def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
     """Parse Metashape XML and return sensors, components, and cameras."""
     xml_tree = ET.parse(xml_path)
@@ -278,12 +285,7 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
     if sensors is None:
         raise ValueError("No sensors found in Metashape XML")
 
-    calibrated_sensors = [
-        sensor for sensor in sensors.iter("sensor")
-        # Spherical sensors may omit calibration because cubemap intrinsics are
-        # derived from crop size/FoV; planar sensors require Metashape calibration.
-        if sensor.get("type") == "spherical" or sensor.find("calibration") is not None
-    ]
+    calibrated_sensors = [sensor for sensor in sensors.iter("sensor") if should_parse_sensor(sensor)]
     if not calibrated_sensors:
         raise ValueError("No calibrated sensor found in Metashape XML")
 
@@ -1067,7 +1069,7 @@ def crop_direction(
 
 
 def parse_direction_mapping(value: Optional[str], default: float = 1.0) -> Dict[str, float]:
-    """Parse direction options like 'top=0.5,bottom:2'; bare directions use default."""
+    """Parse direction options like 'top=0.5,bottom=2.0'; bare directions use default."""
     result: Dict[str, float] = {}
     if not value:
         return result
@@ -1724,7 +1726,7 @@ def convert_metashape_to_colmap(
             f.write(
                 f"{img_id} {q[3]} {q[0]} {q[1]} {q[2]} {t[0]} {t[1]} {t[2]} {img_data['camera_id']} {img_data['name']}\n"
             )
-            f.write(" \n") #LFS needs one space
+            f.write(" \n")  # Keep COLMAP's required empty POINTS2D line as a single space.
 
     if export_xmp:
         xmp_output_dir = xmp_dir if xmp_dir is not None else output_dir / "xmp"
