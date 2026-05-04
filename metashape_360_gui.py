@@ -35,6 +35,8 @@ DEFAULTS = {
     "yolo_classes": "0",
     "yolo_conf": 0.25,
     "mask_overexposure": False,
+    "custom_mask_dir": "",
+    "dual_mask_mode": False,
     "overexposure_threshold": 250,
     "overexposure_dilate": 5,
     "yolo_model": "yolo11m-seg.pt",
@@ -43,6 +45,10 @@ DEFAULTS = {
     "rotate_z180": False,
     "language": "EN",
     "output_format": "auto",
+    "export_xmp": False,
+    "xmp_dir": "",
+    "direction_scales": "",
+    "direction_frame_steps": "",
 }
 
 VALID_DIRECTIONS = ["top", "front", "right", "back", "left", "bottom"]
@@ -74,6 +80,8 @@ UI_TEXT = {
         "range_end": "End:",
         "yaw_offset": "Yaw Offset:",
         "output_format": "Output Format:",
+        "direction_scales": "Direction Scales:",
+        "direction_frame_steps": "Direction Frame Steps:",
         "skip_section": "Skip Directions",
         "skip_note": "(Skip cubemap generation for selected directions)",
         "mask_section": "Mask Generation",
@@ -83,6 +91,8 @@ UI_TEXT = {
         "yolo_model": "YOLO Model:",
         "invert_mask": "Invert mask (object=white)",
         "enable_overexp": "Enable overexposure mask",
+        "custom_mask_dir": "Custom Mask Folder:",
+        "dual_mask_mode": "Dual mask mode (equirect + cubemap)",
         "threshold": "Threshold (0-255):",
         "dilate": "Dilation Radius:",
         "advanced_section": "Dev Options(Don't change)",
@@ -91,6 +101,8 @@ UI_TEXT = {
         "flip_vertical": "Flip vertical (for equirect sampling)",
         "rotate_z180": "Rotate 180° around Z-axis (PostShot compatibility)",
         "apply_component": "Apply component transform for PLY",
+        "export_xmp": "Export XMP for RealityScan",
+        "xmp_dir": "XMP Folder (Optional):",
         "quiet": "Quiet mode (suppress progress output)",
         "save_cfg": "Save Config",
         "load_cfg": "Load Config",
@@ -129,11 +141,15 @@ UI_TEXT = {
         "tip_range": "Index range of images to process (0-based)",
         "tip_yaw_offset": "Per-frame yaw rotation offset (degrees)",
         "tip_output_format": "Output image format. 'auto' uses the same format as input images (default), preserving bit depth and alpha channel",
+        "tip_direction_scales": "Per-direction crop scales, e.g. top=0.5,bottom=0.5",
+        "tip_direction_frame_steps": "Per-direction frame steps, e.g. top=2,bottom=3 keeps every Nth frame",
         "tip_yolo_classes": "Comma-separated class IDs (0=person, 2=car, 3=motorcycle, 5=bus, 7=truck)",
         "tip_yolo_conf": "Minimum YOLO confidence score to keep detections (0.0-1.0)",
         "tip_overexp_threshold": "Treat pixels as overexposed when all RGB channels exceed this value",
         "tip_overexp_dilate": "Dilation amount to cover fringe artifacts around masks (pixels)",
         "tip_flip_vertical": "Flip Y-axis during equirectangular image sampling",
+        "tip_custom_mask_dir": "Folder containing custom equirectangular masks matched by image name or stem",
+        "tip_xmp_dir": "Optional output folder for RealityScan XMP sidecars; blank uses output/xmp",
     },
     "JP": {
         "app_title": "Metashape 360° to COLMAP コンバーター",
@@ -154,6 +170,8 @@ UI_TEXT = {
         "range_end": "終了:",
         "yaw_offset": "Yawオフセット:",
         "output_format": "出力形式:",
+        "direction_scales": "方向別解像度倍率:",
+        "direction_frame_steps": "方向別フレーム間引き:",
         "skip_section": "スキップ方向",
         "skip_note": "(選択した方向のCubemap生成をスキップします)",
         "mask_section": "マスク生成",
@@ -163,6 +181,8 @@ UI_TEXT = {
         "yolo_model": "YOLOモデル:",
         "invert_mask": "マスク反転 (物体=白)",
         "enable_overexp": "露出オーバーマスクを有効化",
+        "custom_mask_dir": "カスタムマスクフォルダ:",
+        "dual_mask_mode": "Dual mask mode (Equirect + Cubemap)",
         "threshold": "閾値 (0-255):",
         "dilate": "膨張半径:",
         "advanced_section": "開発者向けオプション (変更不要)",
@@ -171,6 +191,8 @@ UI_TEXT = {
         "flip_vertical": "垂直フリップ (Equirect用)",
         "rotate_z180": "Z軸180°回転 (PostShot互換)",
         "apply_component": "PLYにコンポーネント変換を適用",
+        "export_xmp": "RealityScan用XMPを書き出す",
+        "xmp_dir": "XMPフォルダ (任意):",
         "quiet": "静音モード (進捗非表示)",
         "save_cfg": "設定を保存",
         "load_cfg": "設定を読み込み",
@@ -209,11 +231,15 @@ UI_TEXT = {
         "tip_range": "処理する画像のインデックス範囲 (0ベース)",
         "tip_yaw_offset": "フレームごとのYaw回転オフセット (degrees)",
         "tip_output_format": "出力画像の形式。'auto'は入力画像と同じ形式を使用 (デフォルト)、ビット深度とアルファチャンネルを維持",
+        "tip_direction_scales": "方向別のクロップ倍率。例: top=0.5,bottom=0.5",
+        "tip_direction_frame_steps": "方向別のフレーム間引き。例: top=2,bottom=3",
         "tip_yolo_classes": "カンマ区切りのクラスID (0=person, 2=car, 3=motorcycle, 5=bus, 7=truck)",
         "tip_yolo_conf": "検出を採用する最小YOLO信頼度スコア (0.0-1.0)",
         "tip_overexp_threshold": "全RGBチャンネルがこの値を超えるピクセルを露出オーバーとみなす",
         "tip_overexp_dilate": "マスク周辺のフリンジアーティファクトをカバーする膨張量 (pixels)",
         "tip_flip_vertical": "Equirectangular画像サンプリング時のY軸反転",
+        "tip_custom_mask_dir": "画像名またはstemで照合するカスタムEquirectangularマスクフォルダ",
+        "tip_xmp_dir": "RealityScan XMP出力フォルダ。空欄の場合は output/xmp",
     },
 }
 
@@ -306,6 +332,8 @@ class Metashape360GUI:
         self.var_yolo_classes = tk.StringVar(value=DEFAULTS["yolo_classes"])
         self.var_yolo_conf = tk.DoubleVar(value=DEFAULTS["yolo_conf"])
         self.var_yolo_model = tk.StringVar(value=DEFAULTS["yolo_model"])
+        self.var_custom_mask_dir = tk.StringVar(value=DEFAULTS["custom_mask_dir"])
+        self.var_dual_mask_mode = tk.BooleanVar(value=DEFAULTS["dual_mask_mode"])
         
         # Overexposure mask
         self.var_mask_overexposure = tk.BooleanVar(value=DEFAULTS["mask_overexposure"])
@@ -316,6 +344,10 @@ class Metashape360GUI:
         self.var_flip_vertical = tk.BooleanVar(value=DEFAULTS["flip_vertical"])
         self.var_rotate_z180 = tk.BooleanVar(value=DEFAULTS["rotate_z180"])
         self.var_apply_component = tk.BooleanVar(value=DEFAULTS["apply_component_transform"])
+        self.var_export_xmp = tk.BooleanVar(value=DEFAULTS["export_xmp"])
+        self.var_xmp_dir = tk.StringVar(value=DEFAULTS["xmp_dir"])
+        self.var_direction_scales = tk.StringVar(value=DEFAULTS["direction_scales"])
+        self.var_direction_frame_steps = tk.StringVar(value=DEFAULTS["direction_frame_steps"])
         self.var_quiet = tk.BooleanVar(value=DEFAULTS["quiet"])
         self.var_language = tk.StringVar(value=DEFAULTS["language"])
         self.var_advanced_expanded = tk.BooleanVar(value=False)
@@ -479,6 +511,16 @@ class Metashape360GUI:
         format_combo.grid(row=4, column=1, sticky="w", padx=5, pady=3)
         ToolTip(format_combo, self.t("tip_output_format"))
 
+        ttk.Label(proc_tab, text=self.t("direction_scales")).grid(row=5, column=0, sticky="w", padx=5)
+        direction_scales_entry = ttk.Entry(proc_tab, textvariable=self.var_direction_scales, width=28)
+        direction_scales_entry.grid(row=5, column=1, sticky="w", padx=5, pady=3)
+        ToolTip(direction_scales_entry, self.t("tip_direction_scales"))
+
+        ttk.Label(proc_tab, text=self.t("direction_frame_steps")).grid(row=5, column=2, sticky="w", padx=5)
+        direction_steps_entry = ttk.Entry(proc_tab, textvariable=self.var_direction_frame_steps, width=28)
+        direction_steps_entry.grid(row=5, column=3, sticky="w", padx=5, pady=3)
+        ToolTip(direction_steps_entry, self.t("tip_direction_frame_steps"))
+
         # Skip directions tab
         directions_inner = ttk.Frame(skip_tab)
         directions_inner.pack(fill="x")
@@ -522,6 +564,20 @@ class Metashape360GUI:
 
         ttk.Checkbutton(self.yolo_frame, text=self.t("invert_mask"),
                 variable=self.var_invert_mask).grid(row=2, column=0, columnspan=2, sticky="w", padx=5, pady=3)
+
+        ttk.Label(self.yolo_frame, text=self.t("custom_mask_dir")).grid(row=3, column=0, sticky="w", padx=5)
+        custom_mask_entry = ttk.Entry(self.yolo_frame, textvariable=self.var_custom_mask_dir, width=35)
+        custom_mask_entry.grid(row=3, column=1, columnspan=2, sticky="ew", padx=5, pady=3)
+        ToolTip(custom_mask_entry, self.t("tip_custom_mask_dir"))
+        ttk.Button(
+            self.yolo_frame,
+            text=self.t("browse"),
+            command=lambda: self.browse_folder(self.var_custom_mask_dir),
+            width=8,
+        ).grid(row=3, column=3, padx=5, pady=3)
+
+        ttk.Checkbutton(self.yolo_frame, text=self.t("dual_mask_mode"),
+                variable=self.var_dual_mask_mode).grid(row=4, column=0, columnspan=4, sticky="w", padx=5, pady=3)
 
         ttk.Separator(mask_tab, orient="horizontal").grid(row=2, column=0, columnspan=4, sticky="ew", pady=10)
 
@@ -582,6 +638,23 @@ class Metashape360GUI:
             text=self.t("apply_component"),
             variable=self.var_apply_component,
         ).grid(row=1, column=0, sticky="w", padx=5)
+
+        ttk.Checkbutton(
+            self.adv_content_frame,
+            text=self.t("export_xmp"),
+            variable=self.var_export_xmp,
+        ).grid(row=2, column=0, sticky="w", padx=5)
+
+        ttk.Label(self.adv_content_frame, text=self.t("xmp_dir")).grid(row=2, column=1, sticky="w", padx=5)
+        xmp_entry = ttk.Entry(self.adv_content_frame, textvariable=self.var_xmp_dir, width=35)
+        xmp_entry.grid(row=2, column=2, sticky="ew", padx=5)
+        ToolTip(xmp_entry, self.t("tip_xmp_dir"))
+        ttk.Button(
+            self.adv_content_frame,
+            text=self.t("browse"),
+            command=lambda: self.browse_folder(self.var_xmp_dir),
+            width=8,
+        ).grid(row=2, column=3, padx=5)
 
         ttk.Checkbutton(
             self.adv_content_frame,
@@ -713,12 +786,18 @@ class Metashape360GUI:
         self.var_yolo_classes.set(DEFAULTS["yolo_classes"])
         self.var_yolo_conf.set(DEFAULTS["yolo_conf"])
         self.var_yolo_model.set(DEFAULTS["yolo_model"])
+        self.var_custom_mask_dir.set(DEFAULTS["custom_mask_dir"])
+        self.var_dual_mask_mode.set(DEFAULTS["dual_mask_mode"])
         self.var_mask_overexposure.set(DEFAULTS["mask_overexposure"])
         self.var_overexposure_threshold.set(DEFAULTS["overexposure_threshold"])
         self.var_overexposure_dilate.set(DEFAULTS["overexposure_dilate"])
         self.var_flip_vertical.set(DEFAULTS["flip_vertical"])
         self.var_rotate_z180.set(DEFAULTS["rotate_z180"])
         self.var_apply_component.set(DEFAULTS["apply_component_transform"])
+        self.var_export_xmp.set(DEFAULTS["export_xmp"])
+        self.var_xmp_dir.set(DEFAULTS["xmp_dir"])
+        self.var_direction_scales.set(DEFAULTS["direction_scales"])
+        self.var_direction_frame_steps.set(DEFAULTS["direction_frame_steps"])
         self.var_quiet.set(DEFAULTS["quiet"])
         
         for d in VALID_DIRECTIONS:
@@ -761,6 +840,10 @@ class Metashape360GUI:
         cmd.extend(["--num-workers", str(self.var_num_workers.get())])
         cmd.extend(["--yaw-offset", str(self.var_yaw_offset.get())])
         cmd.extend(["--output-format", self.var_output_format.get()])
+        if self.var_direction_scales.get().strip():
+            cmd.extend(["--direction-scales", self.var_direction_scales.get().strip()])
+        if self.var_direction_frame_steps.get().strip():
+            cmd.extend(["--direction-frame-steps", self.var_direction_frame_steps.get().strip()])
         
         # Range
         if self.var_range_enabled.get():
@@ -779,6 +862,10 @@ class Metashape360GUI:
             cmd.extend(["--yolo-model", self.var_yolo_model.get()])
             if self.var_invert_mask.get():
                 cmd.append("--invert-mask")
+            if self.var_dual_mask_mode.get():
+                cmd.append("--dual-mask-mode")
+        if self.var_custom_mask_dir.get().strip():
+            cmd.extend(["--custom-mask-dir", self.var_custom_mask_dir.get().strip()])
         
         # Overexposure mask
         if self.var_mask_overexposure.get():
@@ -799,6 +886,11 @@ class Metashape360GUI:
         
         if self.var_apply_component.get():
             cmd.append("--apply-component-transform-for-ply")
+
+        if self.var_export_xmp.get():
+            cmd.append("--export-xmp")
+            if self.var_xmp_dir.get().strip():
+                cmd.extend(["--xmp-dir", self.var_xmp_dir.get().strip()])
         
         if self.var_quiet.get():
             cmd.append("--quiet")
@@ -834,6 +926,8 @@ class Metashape360GUI:
         
         if self.var_ply.get().strip() and not Path(self.var_ply.get()).exists():
             errors.append(self.t("err_ply_missing", path=self.var_ply.get()))
+        if self.var_custom_mask_dir.get().strip() and not Path(self.var_custom_mask_dir.get()).exists():
+            errors.append(self.t("err_images_missing", path=self.var_custom_mask_dir.get()))
         
         if errors:
             messagebox.showerror(self.t("err_title"), "\n".join(errors))
@@ -1050,6 +1144,8 @@ class Metashape360GUI:
             f"num-workers={self.var_num_workers.get()}",
             f"yaw-offset={self.var_yaw_offset.get()}",
             f"output-format={self.var_output_format.get()}",
+            f"direction-scales={self.var_direction_scales.get()}",
+            f"direction-frame-steps={self.var_direction_frame_steps.get()}",
             "",
         ])
         
@@ -1063,6 +1159,8 @@ class Metashape360GUI:
             f"yolo-classes={self.var_yolo_classes.get()}",
             f"yolo-conf={self.var_yolo_conf.get()}",
             f"yolo-model={self.var_yolo_model.get()}",
+            f"custom-mask-dir={self.var_custom_mask_dir.get()}",
+            f"dual-mask-mode={self.var_dual_mask_mode.get()}",
             "",
             f"mask-overexposure={self.var_mask_overexposure.get()}",
             f"overexposure-threshold={self.var_overexposure_threshold.get()}",
@@ -1071,6 +1169,8 @@ class Metashape360GUI:
             f"flip-vertical={self.var_flip_vertical.get()}",
             f"rotate-z180={self.var_rotate_z180.get()}",
             f"apply-component-transform-for-ply={self.var_apply_component.get()}",
+            f"export-xmp={self.var_export_xmp.get()}",
+            f"xmp-dir={self.var_xmp_dir.get()}",
             f"quiet={self.var_quiet.get()}",
             f"language={self.var_language.get()}",
         ])
@@ -1136,6 +1236,10 @@ class Metashape360GUI:
             self.var_yaw_offset.set(float(config["yaw-offset"]))
         if "output-format" in config:
             self.var_output_format.set(config["output-format"])
+        if "direction-scales" in config:
+            self.var_direction_scales.set(config["direction-scales"])
+        if "direction-frame-steps" in config:
+            self.var_direction_frame_steps.set(config["direction-frame-steps"])
         
         if "range-images" in config and config["range-images"]:
             parts = config["range-images"].split("-")
@@ -1164,6 +1268,10 @@ class Metashape360GUI:
             self.var_yolo_conf.set(float(config["yolo-conf"]))
         if "yolo-model" in config:
             self.var_yolo_model.set(config["yolo-model"])
+        if "custom-mask-dir" in config:
+            self.var_custom_mask_dir.set(config["custom-mask-dir"])
+        if "dual-mask-mode" in config:
+            self.var_dual_mask_mode.set(parse_bool(config["dual-mask-mode"]))
         
         if "mask-overexposure" in config:
             self.var_mask_overexposure.set(parse_bool(config["mask-overexposure"]))
@@ -1178,6 +1286,10 @@ class Metashape360GUI:
             self.var_rotate_z180.set(parse_bool(config["rotate-z180"]))
         if "apply-component-transform-for-ply" in config:
             self.var_apply_component.set(parse_bool(config["apply-component-transform-for-ply"]))
+        if "export-xmp" in config:
+            self.var_export_xmp.set(parse_bool(config["export-xmp"]))
+        if "xmp-dir" in config:
+            self.var_xmp_dir.set(config["xmp-dir"])
         if "quiet" in config:
             self.var_quiet.set(parse_bool(config["quiet"]))
         if "language" in config and config["language"] in UI_TEXT:

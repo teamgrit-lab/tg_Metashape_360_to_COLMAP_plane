@@ -9,7 +9,7 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 **Windows binary edition with GUI is sold on BOOTH and Gumroad. No need python command and easy to run!**
 - [BOOTH URL] https://kotohibi-cg.booth.pm/ 
 - [Gumroad URL] https://kotohibi.gumroad.com/
-  - Only binary edition can support the following features
+  - The Python edition now includes the main data-export features below; the paid binary remains the easiest packaged GUI workflow.
     * Dual mask mode which can generate more accurate masks. 
        - Added a mode that performs mask processing with equirectangular and cubemap and fuses them at the end. 
        - Although the processing time will increase, the mask processing system has been improved.
@@ -61,6 +61,12 @@ Refer to other URL
 - Adjustable FoV and crop size; vertical flip for sampling equirect
 - Optional image-count cap for quick tests
 - Generate masks for human
+- Dual mask mode that fuses equirectangular-source and cubemap-crop masks
+- Custom equirectangular mask folder support
+- PNG/TIFF/WebP/JPEG output format selection
+- RealityScan/RealityCapture XMP sidecar export
+- Mixed spherical + planar Metashape XML workflow (planar cameras are exported as PINHOLE)
+- Per-direction crop resolution scales and frame-step decimation
 - Overexposure (white-blown-out) pixel masking
 - Z-axis 180° rotation option for PostShot coordinate system compatibility
 
@@ -89,11 +95,17 @@ python metashape_360_to_colmap.py \
   --max-images 50 \ # If you test quickly, specify small number. default 10000
   --yaw-offset 30 \ # If needed, rotate cubemap for each extraction to be more stable for 3DGS. default 0
   --generate-masks \ # Generate masks for specified objects
+  --dual-mask-mode \ # Fuse equirectangular and cubemap YOLO masks (slower)
+  --custom-mask-dir /path/to/equirect_masks \ # Optional custom masks matched by image name/stem
   --yolo-classes 0,2,5 \ # Mask person (0), car (2), and bus (5). Default: 0 (person only)
   --yolo-conf 0.25 \ # Minimum YOLO confidence score to keep detections (0.0-1.0)
   --mask-overexposure \ # Also mask white-blown-out (overexposed) pixels
   --overexposure-threshold 250 \ # Pixel value threshold for overexposure detection (default 250)
   --overexposure-dilate 5 \ # Dilation radius in pixels (default 5)
+  --output-format png \ # Export crops as PNG for 3DGS training
+  --export-xmp \ # Export RealityScan/RealityCapture XMP sidecars
+  --direction-scales top=0.5,bottom=0.5 \ # Reduce crop size for selected directions
+  --direction-frame-steps top=2,bottom=3 \ # Keep every Nth frame for selected directions
   --rotate-z180 # Rotate scene 180° around Z-axis for PostShot compatibility, default True
 ```
 
@@ -156,7 +168,12 @@ If you specify an option on the command line, it will override the value in conf
 - `--range-images`: Range of images to process (format: `START-END`, e.g., `10-50`). Processes images from START to END (inclusive, 0-based index). Useful for processing specific subsets of images.
 - `--num-workers`: Number of process for image reframing (default 4)
 - `--skip-directions=`:Comma-separated list of directions to skip (top, front, right, back, left, bottom)
+- `--direction-scales`: Per-direction crop size multipliers, e.g. `top=0.5,bottom=0.5`.
+- `--direction-frame-steps`: Per-direction frame-step decimation, e.g. `top=2,bottom=3`.
+- `--output-format`: Output image format (`auto`, `jpg`, `png`, `tiff`, `webp`). Use `png` for PNG export.
 - `--generate-masks` : Generate masks for specified objects using YOLO
+- `--custom-mask-dir`: Use existing equirectangular masks matched by source image name/stem and crop them to output masks.
+- `--dual-mask-mode`: Generate YOLO masks on both equirectangular sources and cubemap crops, then fuse masked pixels. Requires `--generate-masks` and is slower.
 - `--yolo-classes`: Comma-separated YOLO class IDs to include in mask (default: 0 for person only). Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck. Example: `--yolo-classes 0,2,5` for person, car, and bus.
 - `--yolo-conf`: Minimum YOLO confidence score in range `0.0-1.0` to keep detections (default: `0.25`). Raise to reduce false positives, lower to reduce misses.
 - `--invert-mask` : Invert mask color from BLACK to WHITE
@@ -165,11 +182,14 @@ If you specify an option on the command line, it will override the value in conf
 - `--overexposure-dilate`: Dilation radius in pixels to cover fringe artifacts around blown-out areas (default: 5)
 - `--yaw-offset`: Yaw rotation offset (degrees) per frame. E.g., `45.0` rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles. (default 0.0) 
 - `--rotate-z180`: Rotate the entire scene 180° around the Z-axis for PostShot coordinate system compatibility (default: on). Applies to both `images.txt` (camera extrinsics) and `points3D.txt` / `points3D.ply` (point cloud). Use `--no-rotate-z180` to disable.
+- `--export-xmp`: Write RealityScan/RealityCapture XMP sidecars for exported cubemap and planar images.
+- `--xmp-dir`: Optional XMP output directory (default: `output/xmp`).
 
 ### Outputs / 出力
 - `output/ images/`: Cropped images (4 per input frame)
 - `output/ masks/`: Mask images for specified objects if the option (--generate-masks) is specified
 - `output/ tmp`: tmp folder for generating mask process. Able to delete after finishing
+- `output/ xmp/`: RealityScan/RealityCapture XMP sidecars when `--export-xmp` is specified
 - `output/ cameras.txt`
 - `output/ images.txt`
 - `output/ points3D.txt` (+ `points3D.ply` when PLY given)

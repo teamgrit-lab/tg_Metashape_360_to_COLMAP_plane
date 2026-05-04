@@ -24,6 +24,11 @@ num-workers=4
 generate-masks=True
 invert-mask=False
 yaw-offset=0.0
+output-format=auto
+# Per-direction crop resolution scales (e.g., top=0.5,bottom=0.5)
+direction-scales=
+# Per-direction frame steps (e.g., top=2,bottom=3 keeps every Nth frame)
+direction-frame-steps=
 # Comma-separated list of directions to skip (e.g., bottom or top,bottom)
 # Valid: top, front, right, back, left, bottom
 skip-directions=
@@ -35,6 +40,10 @@ quiet=False
 yolo-classes=0
 # Minimum YOLO confidence score (0.0-1.0) to keep detections
 yolo-conf=0.25
+# Optional folder of custom equirectangular masks matched by image file name/stem
+custom-mask-dir=
+# Fuse equirectangular YOLO mask and cubemap YOLO mask (slower, requires generate-masks=True)
+dual-mask-mode=False
 
 # Overexposure (white-blown-out) mask
 # Detect and mask pixels where all RGB channels exceed the threshold
@@ -51,3 +60,7 @@ apply-component-transform-for-ply=False
 flip-vertical=True
 # Rotate scene 180° around Z-axis (for PostShot coordinate system compatibility)
 rotate-z180=True
+# Export RealityScan/RealityCapture XMP sidecar files
+export-xmp=False
+# Optional XMP output directory. Empty means <output>/xmp
+xmp-dir=

@@ -22,6 +22,7 @@ Dependencies:
 import argparse
 import configparser
 import multiprocessing
+import shutil
 import sys
 import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor
@@ -277,24 +278,15 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
     if sensors is None:
         raise ValueError("No sensors found in Metashape XML")
 
-    calibrated_sensors = [
-        sensor for sensor in sensors.iter("sensor")
-        if sensor.get("type") == "spherical" or sensor.find("calibration")
-    ]
+    calibrated_sensors = [sensor for sensor in sensors.iter("sensor") if sensor.find("resolution") is not None]
     if not calibrated_sensors:
         raise ValueError("No calibrated sensor found in Metashape XML")
-
-    sensor_types = [s.get("type") for s in calibrated_sensors]
-    if sensor_types.count(sensor_types[0]) != len(sensor_types):
-        raise ValueError("All sensors must share the same type")
-
-    sensor_type = sensor_types[0]
-    if sensor_type != "spherical":
-        raise ValueError(f"Expected equirectangular (spherical) sensors, got {sensor_type}")
 
     sensor_dict: Dict[str, Dict[str, float]] = {}
     for sensor in calibrated_sensors:
         s: Dict[str, float] = {}
+        sensor_type = sensor.get("type") or "frame"
+        s["type"] = sensor_type
         resolution = sensor.find("resolution")
         if resolution is None:
             raise ValueError("Resolution not found in Metashape XML")
@@ -303,14 +295,26 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
         s["h"] = int(resolution.get("height"))
 
         calib = sensor.find("calibration")
+        if sensor_type == "spherical":
+            s["model"] = "SPHERICAL"
+        else:
+            s["model"] = "PINHOLE"
+
         if calib is None:
             s["fl_x"] = s["w"] / 2.0
-            s["fl_y"] = s["h"]
+            s["fl_y"] = s["w"] / 2.0
             s["cx"] = s["w"] / 2.0
             s["cy"] = s["h"] / 2.0
         else:
             f = calib.find("f")
             if f is None or f.text is None:
+                if sensor_type == "spherical":
+                    s["fl_x"] = s["w"] / 2.0
+                    s["fl_y"] = s["h"]
+                    s["cx"] = s["w"] / 2.0
+                    s["cy"] = s["h"] / 2.0
+                    sensor_dict[sensor.get("id")] = s
+                    continue
                 raise ValueError("Focal length not found in Metashape XML")
             s["fl_x"] = s["fl_y"] = float(f.text)
             s["cx"] = find_param(calib, "cx") + s["w"] / 2.0
@@ -593,6 +597,73 @@ def generate_mask_and_save(
     return (image_path, output_mask_path)
 
 
+def mask_to_object_binary(mask_image: Image.Image, invert_mask: bool) -> np.ndarray:
+    """Convert a final mask image into object/invalid pixels where 255 means masked."""
+    mask = np.array(mask_image.convert("L"))
+    return mask if invert_mask else 255 - mask
+
+
+def object_binary_to_mask(object_mask: np.ndarray, invert_mask: bool) -> Image.Image:
+    """Convert object/invalid pixels (255=masked) to the configured final mask polarity."""
+    object_mask = np.clip(object_mask, 0, 255).astype(np.uint8)
+    final_mask = object_mask if invert_mask else 255 - object_mask
+    return Image.fromarray(final_mask, mode="L")
+
+
+def fuse_mask_images(mask_images: list, invert_mask: bool) -> Image.Image:
+    """Fuse multiple final-polarity masks by unioning their masked/object pixels."""
+    object_mask = None
+    for mask_image in mask_images:
+        if mask_image is None:
+            continue
+        current = mask_to_object_binary(mask_image, invert_mask)
+        object_mask = current if object_mask is None else np.maximum(object_mask, current)
+    if object_mask is None:
+        raise ValueError("No masks to fuse")
+    return object_binary_to_mask(object_mask, invert_mask)
+
+
+def find_matching_mask(mask_dir: Path, image_path: Path, base_name: str) -> Optional[Path]:
+    """Find a custom mask that matches the source image name or stem."""
+    if not mask_dir or not mask_dir.is_dir():
+        return None
+    candidates = [image_path.name, f"{base_name}.png", f"{image_path.stem}.png", f"{base_name}_mask.png"]
+    for candidate in candidates:
+        mask_path = mask_dir / candidate
+        if mask_path.exists():
+            return mask_path
+    for ext in (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".webp"):
+        mask_path = mask_dir / f"{base_name}{ext}"
+        if mask_path.exists():
+            return mask_path
+    return None
+
+
+def copy_or_convert_image(image_path: str, output_image_path: str) -> str:
+    """Copy an image when possible, otherwise convert it to the requested extension."""
+    src = Path(image_path)
+    dst = Path(output_image_path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if src.suffix.lower() == dst.suffix.lower():
+        shutil.copy2(src, dst)
+        return str(dst)
+    image = open_image_preserving_bitdepth(str(src))
+    if isinstance(image, np.ndarray):
+        if image.dtype == np.uint16 and dst.suffix.lower() == ".png":
+            cv_img = image
+            if len(cv_img.shape) == 3 and cv_img.shape[2] == 3:
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGB2BGR)
+            elif len(cv_img.shape) == 3 and cv_img.shape[2] == 4:
+                cv_img = cv2.cvtColor(cv_img, cv2.COLOR_RGBA2BGRA)
+            cv2.imwrite(str(dst), cv_img)
+            return str(dst)
+        image = numpy_to_pil_image_16bit(image)
+    if dst.suffix.lower() in (".jpg", ".jpeg") and image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    image.save(dst)
+    return str(dst)
+
+
 def crop_and_save_image(
     image_path: str,
     direction: str,
@@ -605,6 +676,14 @@ def crop_and_save_image(
     yaw_offset: float = 0.0,
     preserve_alpha: bool = False,
     verbose: bool = False,
+    dual_mask_mode: bool = False,
+    yolo_model_path: Optional[str] = None,
+    yolo_conf: float = 0.25,
+    invert_mask: bool = False,
+    class_ids: Optional[list] = None,
+    mask_overexposure: bool = False,
+    overexposure_threshold: int = 250,
+    overexposure_dilate: int = 5,
 ) -> Tuple[str, str, str, np.ndarray]:
     """Crop equirectangular image and save. Optionally crop and save mask from file path. Returns (direction, output_name, output_path, metadata).
     
@@ -783,9 +862,27 @@ def crop_and_save_image(
             )
             # cropped_mask should be PIL Image for masks (8-bit)
             if isinstance(cropped_mask, Image.Image):
-                cropped_mask.save(output_mask_path)
+                mask_candidates = [cropped_mask]
+                if dual_mask_mode:
+                    if not HAS_YOLO:
+                        raise ImportError("ultralytics is required for dual mask mode")
+                    cubemap_model = YOLO(yolo_model_path)
+                    cubemap_mask = create_person_mask_from_yolo(
+                        output_image_path,
+                        cubemap_model,
+                        yolo_conf=yolo_conf,
+                        invert_mask=invert_mask,
+                        class_ids=class_ids,
+                        mask_overexposure=mask_overexposure,
+                        overexposure_threshold=overexposure_threshold,
+                        overexposure_dilate=overexposure_dilate,
+                    )
+                    mask_candidates.append(cubemap_mask)
+                fused_mask = fuse_mask_images(mask_candidates, invert_mask)
+                fused_mask.save(output_mask_path)
         except Exception as e:
-            pass
+            if verbose:
+                print(f"  Error processing mask for {output_image_path}: {e}")
     
     # Verify output file mode by re-opening it
     # DEBUG LOG DISABLED
@@ -952,6 +1049,124 @@ def crop_direction(
     return numpy_to_image_preserving_bitdepth(sampled, original_mode)
 
 
+def parse_direction_mapping(value: Optional[str], default: float = 1.0) -> Dict[str, float]:
+    """Parse direction options like 'top=0.5,bottom:2'."""
+    result: Dict[str, float] = {}
+    if not value:
+        return result
+    for item in str(value).split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" in item:
+            key, raw = item.split("=", 1)
+        elif ":" in item:
+            key, raw = item.split(":", 1)
+        else:
+            key, raw = item, str(default)
+        result[key.strip().lower()] = float(raw.strip())
+    return result
+
+
+def get_or_create_camera(
+    cameras_colmap: Dict[int, Dict[str, Any]],
+    camera_lookup: Dict[Tuple[Any, ...], int],
+    next_camera_id: int,
+    key: Tuple[Any, ...],
+    width: int,
+    height: int,
+    params: list,
+    model: str = "PINHOLE",
+) -> Tuple[int, int]:
+    """Return an existing COLMAP camera id or create a new one."""
+    if key in camera_lookup:
+        return camera_lookup[key], next_camera_id
+    camera_id = next_camera_id
+    camera_lookup[key] = camera_id
+    cameras_colmap[camera_id] = {
+        "width": width,
+        "height": height,
+        "model": model,
+        "params": params,
+    }
+    return camera_id, next_camera_id + 1
+
+
+def add_pose_to_colmap(
+    images_colmap: Dict[int, Dict[str, Any]],
+    image_id: int,
+    R_c2w: np.ndarray,
+    t_c2w: np.ndarray,
+    camera_id: int,
+    image_name: str,
+    rotate_z180: bool,
+) -> int:
+    """Add an image pose to COLMAP image metadata."""
+    R_w2c = R_c2w.T
+    t_w2c = -R_w2c @ t_c2w
+    if rotate_z180:
+        R_z180 = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)
+        R_w2c = R_w2c @ R_z180
+    q = quaternion_from_matrix(R_w2c)
+    images_colmap[image_id] = {
+        "quat": q,
+        "tvec": t_w2c,
+        "camera_id": camera_id,
+        "name": image_name,
+    }
+    return image_id + 1
+
+
+def write_realityscan_xmp(
+    xmp_path: Path,
+    image_name: str,
+    image_data: Dict[str, Any],
+    camera_data: Dict[str, Any],
+) -> None:
+    """Write a RealityScan/RealityCapture-style XMP sidecar for one image."""
+    q = image_data["quat"]
+    t = image_data["tvec"]
+    R_w2c = quaternion_to_rotation_matrix(np.array([q[3], q[0], q[1], q[2]]))
+    R_c2w = R_w2c.T
+    position = -R_c2w @ t
+    rotation = " ".join(f"{v:.12g}" for v in R_c2w.reshape(-1))
+    position_str = " ".join(f"{v:.12g}" for v in position)
+    params = camera_data["params"]
+    focal = params[0] if params else 0.0
+    principal = f"{params[2]:.12g} {params[3]:.12g}" if len(params) >= 4 else "0 0"
+    xmp_path.parent.mkdir(parents=True, exist_ok=True)
+    xmp_path.write_text(
+        "\n".join([
+            '<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>',
+            '<x:xmpmeta xmlns:x="adobe:ns:meta/">',
+            '  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">',
+            '    <rdf:Description xmlns:xcr="http://www.capturingreality.com/ns/xcr/1.1#"',
+            f'      xcr:Image="{image_name}"',
+            '      xcr:PosePrior="initial"',
+            '      xcr:Coordinates="absolute"',
+            f'      xcr:Rotation="{rotation}"',
+            f'      xcr:Position="{position_str}"',
+            f'      xcr:FocalLength="{focal:.12g}"',
+            f'      xcr:PrincipalPoint="{principal}" />',
+            "  </rdf:RDF>",
+            "</x:xmpmeta>",
+            '<?xpacket end="w"?>',
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+
+def quaternion_to_rotation_matrix(q: np.ndarray) -> np.ndarray:
+    """Convert quaternion [qw, qx, qy, qz] to a rotation matrix."""
+    qw, qx, qy, qz = q / np.linalg.norm(q)
+    return np.array([
+        [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)],
+        [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw)],
+        [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy)],
+    ])
+
+
 def convert_metashape_to_colmap(
     images_dir: Path,
     xml_path: Path,
@@ -977,6 +1192,12 @@ def convert_metashape_to_colmap(
     overexposure_threshold: int = 250,
     overexposure_dilate: int = 5,
     output_format: Optional[str] = None,
+    custom_mask_dir: Optional[Path] = None,
+    dual_mask_mode: bool = False,
+    export_xmp: bool = False,
+    xmp_dir: Optional[Path] = None,
+    direction_scales: Optional[Dict[str, float]] = None,
+    direction_frame_steps: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format.
     
@@ -1011,16 +1232,21 @@ def convert_metashape_to_colmap(
     masks_output_dir = None
     tmp_masks_dir = None
     yolo_model = None
-    if generate_masks:
+    if dual_mask_mode and not generate_masks:
+        raise ValueError("--dual-mask-mode requires --generate-masks")
+
+    if generate_masks or custom_mask_dir is not None:
         if not HAS_YOLO:
-            raise ImportError("ultralytics is required for mask generation. Install with: pip install ultralytics")
+            if generate_masks:
+                raise ImportError("ultralytics is required for mask generation. Install with: pip install ultralytics")
         masks_output_dir = output_dir / "masks"
         masks_output_dir.mkdir(parents=True, exist_ok=True)
         tmp_masks_dir = output_dir / "tmp"
         tmp_masks_dir.mkdir(parents=True, exist_ok=True)
-        if verbose:
+        if generate_masks and verbose:
             print(f"Loading YOLO model: {yolo_model_path}")
-        yolo_model = YOLO(yolo_model_path)
+        if generate_masks:
+            yolo_model = YOLO(yolo_model_path)
 
     if verbose:
         print(f"Parsing Metashape XML: {xml_path}")
@@ -1066,17 +1292,11 @@ def convert_metashape_to_colmap(
         print(f"Output format: {output_ext}, preserve alpha: {preserve_alpha}, bit depth: {input_bit_depth}-bit")
 
 
-    camera_id = 1  # single shared intrinsic entry
-    fx = fy = (crop_size / 2.0) / np.tan(np.deg2rad(fov_deg) / 2.0)
-    cx = cy = crop_size / 2.0
-    cameras_colmap = {
-        camera_id: {
-            "width": crop_size,
-            "height": crop_size,
-            "model": "PINHOLE",
-            "params": [fx, fy, cx, cy],
-        }
-    }
+    cameras_colmap: Dict[int, Dict[str, Any]] = {}
+    camera_lookup: Dict[Tuple[Any, ...], int] = {}
+    next_camera_id = 1
+    direction_scales = direction_scales or {}
+    direction_frame_steps = direction_frame_steps or {}
 
     images_colmap: Dict[int, Dict[str, Any]] = {}
     image_id = 1
@@ -1093,8 +1313,10 @@ def convert_metashape_to_colmap(
         print(f"  Using directions: {directions}")
 
     # Collect all crop tasks for parallel processing
-    crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
+    crop_tasks = []  # List of crop worker args
+    planar_copy_tasks = []
     camera_metadata = []  # Store metadata for later processing
+    planar_metadata = []
     equirect_mask_paths = {}  # Cache for generated mask file paths {image_path: tmp_mask_path}
     equirect_images_to_process = []  # List of (src_image_path, base_name) for mask generation
     frame_index = 0  # Track frame index for yaw offset calculation
@@ -1135,6 +1357,7 @@ def convert_metashape_to_colmap(
                 print(f"  Skipping {camera_label}: no sensor calibration")
             num_skipped += 1
             continue
+        sensor_info = sensor_dict[sensor_id]
 
         transform_elem = camera.find("transform")
         if transform_elem is None or transform_elem.text is None:
@@ -1176,19 +1399,60 @@ def convert_metashape_to_colmap(
             print(f"  R_c2w:\n{R_c2w}")
             print(f"  t_c2w: {t_c2w}")
 
-        # Collect equirectangular images for mask generation
+        # Collect equirectangular/custom masks for mask generation
+        if custom_mask_dir is not None:
+            custom_mask_path = find_matching_mask(custom_mask_dir, src_image_path, base_name)
+            if custom_mask_path is not None:
+                equirect_mask_paths[str(src_image_path)] = str(custom_mask_path)
+            elif verbose and (generate_masks or dual_mask_mode):
+                print(f"  Custom mask not found for {camera_label}; falling back to generated mask if enabled")
         if generate_masks and str(src_image_path) not in equirect_mask_paths:
             equirect_images_to_process.append((str(src_image_path), base_name))
 
         # Calculate yaw offset for this frame
         current_yaw_offset = frame_index * yaw_offset_per_frame
 
-        # Queue tasks for each direction
-        for direction in directions:
-            output_image_name = f"{base_name}_{direction}{output_ext}"
+        if sensor_info.get("type") == "spherical":
+            # Queue tasks for each cubemap direction
+            for direction in directions:
+                frame_step = int(direction_frame_steps.get(direction, 1))
+                if frame_step < 1:
+                    frame_step = 1
+                if frame_index % frame_step != 0:
+                    continue
+                direction_scale = float(direction_scales.get(direction, 1.0))
+                if direction_scale <= 0:
+                    raise ValueError(f"Direction scale for {direction} must be > 0")
+                direction_crop_size = max(1, int(round(crop_size * direction_scale)))
+                fx = fy = (direction_crop_size / 2.0) / np.tan(np.deg2rad(fov_deg) / 2.0)
+                cx = cy = direction_crop_size / 2.0
+                direction_camera_id, next_camera_id = get_or_create_camera(
+                    cameras_colmap,
+                    camera_lookup,
+                    next_camera_id,
+                    ("cubemap", direction_crop_size, fov_deg),
+                    direction_crop_size,
+                    direction_crop_size,
+                    [fx, fy, cx, cy],
+                )
+                output_image_name = f"{base_name}_{direction}{output_ext}"
+                output_image_path = str(images_output_dir / output_image_name)
+                crop_tasks.append((str(src_image_path), direction, direction_crop_size, output_image_path, fov_deg, flip_vertical, current_yaw_offset, preserve_alpha))
+                camera_metadata.append((base_name, direction, R_c2w, t_c2w, current_yaw_offset, output_ext, direction_camera_id))
+        else:
+            planar_camera_id, next_camera_id = get_or_create_camera(
+                cameras_colmap,
+                camera_lookup,
+                next_camera_id,
+                ("planar", sensor_id, int(sensor_info["w"]), int(sensor_info["h"]), sensor_info["fl_x"], sensor_info["fl_y"], sensor_info["cx"], sensor_info["cy"]),
+                int(sensor_info["w"]),
+                int(sensor_info["h"]),
+                [sensor_info["fl_x"], sensor_info["fl_y"], sensor_info["cx"], sensor_info["cy"]],
+            )
+            output_image_name = f"{base_name}{output_ext}"
             output_image_path = str(images_output_dir / output_image_name)
-            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical, current_yaw_offset, preserve_alpha))
-            camera_metadata.append((base_name, direction, R_c2w, t_c2w, current_yaw_offset, output_ext))
+            planar_copy_tasks.append((str(src_image_path), output_image_path))
+            planar_metadata.append((output_image_name, R_c2w, t_c2w, planar_camera_id))
 
         processed_cameras += 1
         frame_index += 1
@@ -1262,6 +1526,18 @@ def convert_metashape_to_colmap(
         if verbose:
             print(f"  Completed {len(equirect_mask_paths)} masks")
 
+    if planar_copy_tasks:
+        if verbose:
+            print(f"Copying/converting {len(planar_copy_tasks)} planar images...")
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = [executor.submit(copy_or_convert_image, task[0], task[1]) for task in planar_copy_tasks]
+            for idx, future in enumerate(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    if verbose:
+                        print(f"  Error processing planar image {idx + 1}: {exc}")
+
     # Process crops in parallel
     if crop_tasks:
         if verbose:
@@ -1279,7 +1555,7 @@ def convert_metashape_to_colmap(
                 # Determine mask file path if masks are enabled
                 mask_file_path = None
                 output_mask_path = None
-                if generate_masks:
+                if masks_output_dir is not None:
                     mask_file_path = equirect_mask_paths.get(src_image_path)
                     if mask_file_path is not None:
                         # Replace the output image extension with .png for mask
@@ -1306,6 +1582,14 @@ def convert_metashape_to_colmap(
                         yaw_offset_val,
                         preserve_alpha_val,
                         verbose,
+                        dual_mask_mode,
+                        yolo_model_path,
+                        yolo_conf,
+                        invert_mask,
+                        yolo_classes,
+                        mask_overexposure,
+                        overexposure_threshold,
+                        overexposure_dilate,
                     )
                 )
 
@@ -1344,7 +1628,7 @@ def convert_metashape_to_colmap(
                 print()
 
     # Build images_colmap from results
-    for idx, (base_name, direction, R_c2w, t_c2w, yaw_offset, output_ext) in enumerate(camera_metadata):
+    for idx, (base_name, direction, R_c2w, t_c2w, yaw_offset, output_ext, camera_id) in enumerate(camera_metadata):
         output_image_name = f"{base_name}_{direction}{output_ext}"
         
         R_dir = get_direction_rotation_matrix(direction)
@@ -1373,7 +1657,6 @@ def convert_metashape_to_colmap(
             # t_w2c stays the same (derivation: t_new = -(R@Rz) @ (Rz@c) = -R@c = t)
 
         q = quaternion_from_matrix(R_w2c)
-
         images_colmap[image_id] = {
             "quat": q,  # [x, y, z, w]
             "tvec": t_w2c,
@@ -1381,6 +1664,18 @@ def convert_metashape_to_colmap(
             "name": output_image_name,
         }
         image_id += 1
+        processed_images += 1
+
+    for output_image_name, R_c2w, t_c2w, planar_camera_id in planar_metadata:
+        image_id = add_pose_to_colmap(
+            images_colmap,
+            image_id,
+            R_c2w,
+            t_c2w,
+            planar_camera_id,
+            output_image_name,
+            rotate_z180,
+        )
         processed_images += 1
 
     if verbose:
@@ -1415,6 +1710,20 @@ def convert_metashape_to_colmap(
                 f"{img_id} {q[3]} {q[0]} {q[1]} {q[2]} {t[0]} {t[1]} {t[2]} {img_data['camera_id']} {img_data['name']}\n"
             )
             f.write(" \n") #LFS needs one space
+
+    if export_xmp:
+        xmp_output_dir = xmp_dir if xmp_dir is not None else output_dir / "xmp"
+        for img_id in sorted(images_colmap.keys()):
+            img_data = images_colmap[img_id]
+            camera_data = cameras_colmap[img_data["camera_id"]]
+            write_realityscan_xmp(
+                xmp_output_dir / f"{Path(img_data['name']).stem}.xmp",
+                img_data["name"],
+                img_data,
+                camera_data,
+            )
+        if verbose:
+            print(f"Wrote RealityScan XMP files to {xmp_output_dir}")
 
     points3d_data = []
     if ply_path is not None and ply_path.exists() and HAS_OPEN3D:
@@ -1755,6 +2064,42 @@ def main() -> int:
         choices=["auto", "jpg", "jpeg", "png", "tiff", "tif", "webp"],
         help="Output image format. 'auto' (default) uses the same format as input images, preserving bit depth and alpha channel when applicable."
     )
+    parser.add_argument(
+        "--custom-mask-dir",
+        type=Path,
+        default=Path(config["custom-mask-dir"]) if "custom-mask-dir" in config else None,
+        help="Directory containing equirectangular custom masks matched by source image name/stem"
+    )
+    parser.add_argument(
+        "--dual-mask-mode",
+        action="store_true",
+        default=config.get("dual-mask-mode", False) if isinstance(config.get("dual-mask-mode"), bool) else False,
+        help="Fuse masks generated from both equirectangular images and final cubemap crops (slower, more accurate)"
+    )
+    parser.add_argument(
+        "--export-xmp",
+        action="store_true",
+        default=config.get("export-xmp", False) if isinstance(config.get("export-xmp"), bool) else False,
+        help="Export RealityScan/RealityCapture XMP sidecars for every output image"
+    )
+    parser.add_argument(
+        "--xmp-dir",
+        type=Path,
+        default=Path(config["xmp-dir"]) if "xmp-dir" in config else None,
+        help="Optional XMP output directory (default: <output>/xmp)"
+    )
+    parser.add_argument(
+        "--direction-scales",
+        type=str,
+        default=config.get("direction-scales", ""),
+        help="Per-direction crop resolution scales, e.g. top=0.5,bottom=0.5,front=1.0"
+    )
+    parser.add_argument(
+        "--direction-frame-steps",
+        type=str,
+        default=config.get("direction-frame-steps", ""),
+        help="Per-direction frame steps, e.g. top=2,bottom=3 to keep every Nth frame for those directions"
+    )
 
     args = parser.parse_args()
     
@@ -1772,6 +2117,10 @@ def main() -> int:
 
     if not (0.0 <= args.yolo_conf <= 1.0):
         print("Error: --yolo-conf must be in range [0.0, 1.0].")
+        return 1
+
+    if args.dual_mask_mode and not args.generate_masks:
+        print("Error: --dual-mask-mode requires --generate-masks.")
         return 1
     
     # Parse skip-directions if specified
@@ -1812,6 +2161,31 @@ def main() -> int:
     if args.ply and not args.ply.is_file():
         print(f"Error: PLY file not found: {args.ply}")
         return 1
+    if args.custom_mask_dir and not args.custom_mask_dir.is_dir():
+        print(f"Error: Custom mask directory not found: {args.custom_mask_dir}")
+        return 1
+
+    try:
+        direction_scales = parse_direction_mapping(args.direction_scales)
+        invalid_scale_dirs = set(direction_scales) - valid_directions
+        if invalid_scale_dirs:
+            print(f"Error: Invalid direction-scales directions: {invalid_scale_dirs}. Valid: {valid_directions}")
+            return 1
+        if any(scale <= 0 for scale in direction_scales.values()):
+            print("Error: All direction scales must be > 0.")
+            return 1
+        direction_frame_steps_float = parse_direction_mapping(args.direction_frame_steps)
+        invalid_step_dirs = set(direction_frame_steps_float) - valid_directions
+        if invalid_step_dirs:
+            print(f"Error: Invalid direction-frame-steps directions: {invalid_step_dirs}. Valid: {valid_directions}")
+            return 1
+        direction_frame_steps = {key: int(value) for key, value in direction_frame_steps_float.items()}
+        if any(step < 1 for step in direction_frame_steps.values()):
+            print("Error: All direction frame steps must be >= 1.")
+            return 1
+    except ValueError as exc:
+        print(f"Error: Invalid direction option: {exc}")
+        return 1
 
     try:
         result = convert_metashape_to_colmap(
@@ -1839,6 +2213,12 @@ def main() -> int:
             overexposure_threshold=args.overexposure_threshold,
             overexposure_dilate=args.overexposure_dilate,
             output_format=args.output_format,
+            custom_mask_dir=args.custom_mask_dir,
+            dual_mask_mode=args.dual_mask_mode,
+            export_xmp=args.export_xmp,
+            xmp_dir=args.xmp_dir,
+            direction_scales=direction_scales,
+            direction_frame_steps=direction_frame_steps,
         )
         if not args.quiet:
             print("\nConversion complete!")
