@@ -278,7 +278,10 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
     if sensors is None:
         raise ValueError("No sensors found in Metashape XML")
 
-    calibrated_sensors = [sensor for sensor in sensors.iter("sensor") if sensor.find("resolution") is not None]
+    calibrated_sensors = [
+        sensor for sensor in sensors.iter("sensor")
+        if sensor.get("type") == "spherical" or sensor.find("calibration") is not None
+    ]
     if not calibrated_sensors:
         raise ValueError("No calibrated sensor found in Metashape XML")
 
@@ -301,14 +304,20 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
             s["model"] = "PINHOLE"
 
         if calib is None:
+            if sensor_type != "spherical":
+                raise ValueError("Calibration not found for non-spherical sensor in Metashape XML")
+            # Spherical/equirectangular crops define their own PINHOLE intrinsics from
+            # crop size and FoV later, so source focal length is not required here.
             s["fl_x"] = s["w"] / 2.0
-            s["fl_y"] = s["h"] / 2.0
+            s["fl_y"] = s["h"]
             s["cx"] = s["w"] / 2.0
             s["cy"] = s["h"] / 2.0
         else:
             f = calib.find("f")
             if f is None or f.text is None:
                 if sensor_type == "spherical":
+                    # Metashape spherical sensors may omit f; cubemap export uses
+                    # user-selected crop FoV instead of these source intrinsics.
                     s["fl_x"] = s["w"] / 2.0
                     s["fl_y"] = s["h"]
                     s["cx"] = s["w"] / 2.0
@@ -814,28 +823,26 @@ def crop_and_save_image(
             output_name = Path(output_image_path).name
             return (direction, output_name, output_image_path, np.array([]))
     
-    if image_saved:
-        pass
-    elif output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
+    if not image_saved and (output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg')):
         # JPG doesn't support alpha or bit depths > 8, convert to RGB 8-bit
         if isinstance(cropped, Image.Image) and cropped.mode not in ['RGB', 'L']:
             cropped = cropped.convert('RGB')
         cropped.save(output_image_path, quality=100, optimize=True)
         if verbose:
             print(f"    Saved as JPG (8-bit, no alpha)")
-    elif output_path_lower.endswith('.png'):
+    elif not image_saved and output_path_lower.endswith('.png'):
         # PNG supports alphaand bit depths
         if isinstance(cropped, Image.Image):
             cropped.save(output_image_path, optimize=True)
             if verbose:
                 print(f"    Saved as PNG ({cropped.mode})")
-    elif output_path_lower.endswith(('.tiff', '.tif')):
+    elif not image_saved and output_path_lower.endswith(('.tiff', '.tif')):
         # TIFF supports all modes and bit depths - preserve as-is
         if isinstance(cropped, Image.Image):
             cropped.save(output_image_path, compression='none')
             if verbose:
                 print(f"    Saved as TIFF ({cropped.mode})")
-    elif output_path_lower.endswith('.webp'):
+    elif not image_saved and output_path_lower.endswith('.webp'):
         # WebP - convert to RGB/RGBA if needed but preserve 8-bit
         if isinstance(cropped, Image.Image):
             if cropped.mode not in ['RGB', 'RGBA', 'L']:
@@ -846,7 +853,7 @@ def crop_and_save_image(
             cropped.save(output_image_path, quality=100)
             if verbose:
                 print(f"    Saved as WebP ({cropped.mode})")
-    else:
+    elif not image_saved:
         # Default: try to save as-is
         if isinstance(cropped, Image.Image):
             cropped.save(output_image_path, quality=100)
@@ -1409,7 +1416,7 @@ def convert_metashape_to_colmap(
             custom_mask_path = find_matching_mask(custom_mask_dir, src_image_path, base_name)
             if custom_mask_path is not None:
                 equirect_mask_paths[str(src_image_path)] = str(custom_mask_path)
-            elif verbose and (generate_masks or dual_mask_mode):
+            elif verbose and generate_masks:
                 print(f"  Custom mask not found for {camera_label}; falling back to generated mask if enabled")
         if generate_masks and str(src_image_path) not in equirect_mask_paths:
             equirect_images_to_process.append((str(src_image_path), base_name))

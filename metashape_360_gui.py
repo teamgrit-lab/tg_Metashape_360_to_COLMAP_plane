@@ -118,6 +118,7 @@ UI_TEXT = {
         "err_xml_missing": "XML file not found: {path}",
         "err_output_required": "Please specify output folder",
         "err_ply_missing": "PLY file not found: {path}",
+        "err_mask_dir_missing": "Custom mask folder not found: {path}",
         "cmd": "Command: {cmd}",
         "done_ok": "✓ Conversion completed successfully.",
         "done_ng": "✗ Conversion exited with error code {code}.",
@@ -208,6 +209,7 @@ UI_TEXT = {
         "err_xml_missing": "XMLファイルが見つかりません: {path}",
         "err_output_required": "出力フォルダを指定してください",
         "err_ply_missing": "PLYファイルが見つかりません: {path}",
+        "err_mask_dir_missing": "カスタムマスクフォルダが見つかりません: {path}",
         "cmd": "実行コマンド: {cmd}",
         "done_ok": "✓ 変換が正常に完了しました。",
         "done_ng": "✗ 変換がエラーコード {code} で終了しました。",
@@ -927,7 +929,7 @@ class Metashape360GUI:
         if self.var_ply.get().strip() and not Path(self.var_ply.get()).exists():
             errors.append(self.t("err_ply_missing", path=self.var_ply.get()))
         if self.var_custom_mask_dir.get().strip() and not Path(self.var_custom_mask_dir.get()).exists():
-            errors.append(self.t("err_images_missing", path=self.var_custom_mask_dir.get()))
+            errors.append(self.t("err_mask_dir_missing", path=self.var_custom_mask_dir.get()))
         
         if errors:
             messagebox.showerror(self.t("err_title"), "\n".join(errors))
