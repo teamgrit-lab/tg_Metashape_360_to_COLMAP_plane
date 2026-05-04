@@ -791,7 +791,8 @@ def crop_and_save_image(
                         f.flush()
                 except:
                     pass
-                return
+                if success:
+                    cropped = None
         except Exception as e:
             # If OpenCV saving fails, fall through to try PIL
             pass
@@ -809,7 +810,8 @@ def crop_and_save_image(
                 cropped = Image.fromarray(cropped)
         else:
             # Shouldn't reach here - 16-bit should have been handled above
-            return
+            output_name = Path(output_image_path).name
+            return (direction, output_name, output_image_path, np.array([]))
     
     if output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
         # JPG doesn't support alpha or bit depths > 8, convert to RGB 8-bit
